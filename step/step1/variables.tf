@@ -1,7 +1,14 @@
-variable "global_tags_name" {
+variable "global_tags" {
+  type = map(string)
+  default = {
+    Tags = "not_set"
+  }
+}
+
+variable "project_name" {
   type        = string
-  description = "リソース名のプレフィックス"
-  default     = "myapp-dev"
+  default     = "project_name_default"
+  description = "プロジェクト名"
 }
 
 // ネットワークに関する情報をここでひとまとめに定義

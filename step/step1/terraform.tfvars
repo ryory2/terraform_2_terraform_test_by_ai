@@ -1,6 +1,15 @@
 # 全Terraformリソースで使う共通タグをここにまとめる
-global_tags_name = "myapp-devaaaaaaaaaaa"
+project_name = "project_name_custom"
 
+/**
+ * 全リソースで使う共通タグをここにまとめる
+ * 変数:
+ * キー = タグ名
+ */
+global_tags = {
+  Environment = "dev"
+  #   Owner       = "prod-team"
+}
 /**
  * ネットワーク作成で使用する変数
  * 変数:
