@@ -1,5 +1,5 @@
 # 全Terraformリソースで使う共通タグをここにまとめる
-project_name = "project_name_custom"
+project_name = "project-name-custom" //プロジェクト名は「-」を利用する。
 
 /**
  * 全リソースで使う共通タグをここにまとめる
