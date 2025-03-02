@@ -29,7 +29,6 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-
 resource "aws_subnet" "public2" {
   vpc_id            = aws_vpc.this.id
   cidr_block        = "10.0.3.0/24"
@@ -52,21 +51,6 @@ resource "aws_route_table_association" "public2" {
   route_table_id = aws_route_table.public2.id
 }
 
-
-#######################
-# NAT Gateway用Elastic IPの作成
-#######################
-resource "aws_eip" "nat_eip" {
-  vpc = true
-}
-
-#######################
-# NAT Gatewayの作成（パブリックサブネット内に配置）
-#######################
-resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat_eip.id
-  subnet_id     = aws_subnet.public.id
-}
 resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.this.id
   cidr_block        = "10.0.2.0/24"
@@ -81,7 +65,7 @@ resource "aws_route_table" "private" {
 resource "aws_route" "private" {
   route_table_id         = aws_route_table.private.id
   destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_nat_gateway.nat.id
+  gateway_id             = aws_internet_gateway.gw.id
 }
 
 resource "aws_route_table_association" "private" {
