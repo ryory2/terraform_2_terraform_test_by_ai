@@ -8,10 +8,10 @@ resource "aws_internet_gateway" "gw" {
 }
 
 resource "aws_subnet" "public" {
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = "10.0.1.0/24"
-  availability_zone = "ap-northeast-1a"
-  # map_public_ip_on_launch = true
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-northeast-1a"
+  map_public_ip_on_launch = true
 }
 
 resource "aws_route_table" "public" {
@@ -31,7 +31,7 @@ resource "aws_route_table_association" "public" {
 
 resource "aws_subnet" "public2" {
   vpc_id            = aws_vpc.this.id
-  cidr_block        = "10.0.3.0/24"
+  cidr_block        = "10.0.2.0/24"
   availability_zone = "ap-northeast-1c"
   # map_public2_ip_on_launch = true
 }
@@ -51,27 +51,27 @@ resource "aws_route_table_association" "public2" {
   route_table_id = aws_route_table.public2.id
 }
 
-resource "aws_subnet" "private" {
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = "10.0.2.0/24"
-  availability_zone = "ap-northeast-1c"
-  # map_public_ip_on_launch = true
-}
+# resource "aws_subnet" "private" {
+#   vpc_id            = aws_vpc.this.id
+#   cidr_block        = "10.0.2.0/24"
+#   availability_zone = "ap-northeast-1c"
+#   # map_public_ip_on_launch = true
+# }
 
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.this.id
-}
+# resource "aws_route_table" "private" {
+#   vpc_id = aws_vpc.this.id
+# }
 
-resource "aws_route" "private" {
-  route_table_id         = aws_route_table.private.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.gw.id
-}
+# resource "aws_route" "private" {
+#   route_table_id         = aws_route_table.private.id
+#   destination_cidr_block = "0.0.0.0/0"
+#   gateway_id             = aws_internet_gateway.gw.id
+# }
 
-resource "aws_route_table_association" "private" {
-  subnet_id      = aws_subnet.private.id
-  route_table_id = aws_route_table.private.id
-}
+# resource "aws_route_table_association" "private" {
+#   subnet_id      = aws_subnet.private.id
+#   route_table_id = aws_route_table.private.id
+# }
 
 resource "aws_security_group" "alb_sg" {
   name   = "alb-sg"
@@ -278,9 +278,9 @@ resource "aws_ecs_service" "main" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.private.id]
+    subnets          = [aws_subnet.public.id]
     security_groups  = [aws_security_group.ecs_sg.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   load_balancer {
@@ -298,4 +298,98 @@ resource "aws_ecs_service" "main" {
     aws_ecs_task_definition.main,
     aws_service_discovery_private_dns_namespace.this
   ]
+}
+#
+######################
+# GitHub Actions用IAMユーザー
+#######################
+resource "aws_iam_user" "github_actions_deployer" {
+  name          = "github-actions-deployer"
+  force_destroy = true
+}
+
+resource "aws_iam_user_policy_attachment" "ecr_access" {
+  user       = aws_iam_user.github_actions_deployer.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
+}
+
+resource "aws_iam_user_policy_attachment" "ecs_access" {
+  user       = aws_iam_user.github_actions_deployer.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+}
+
+
+# 各ステートメントを含むIAMポリシードキュメント
+resource "aws_iam_policy" "ecs_task_deploy_policy" {
+  name        = "ECSRegisterAndDeployPolicy"
+  description = "Policy to allow registering ECS task definitions and updating ECS services"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "RegisterTaskDefinition",
+        Effect = "Allow",
+        Action = [
+          "ecs:RegisterTaskDefinition"
+        ],
+        Resource = "*"
+      },
+      {
+        Sid    = "PassRolesInTaskDefinition",
+        Effect = "Allow",
+        Action = [
+          "iam:PassRole"
+        ],
+        Resource = [
+          # 実際に使用しているロールARNに修正
+          "arn:aws:iam::990606419933:role/ecsTaskRole",
+          "arn:aws:iam::990606419933:role/ecsTaskExecutionRole"
+        ]
+      },
+      {
+        Sid    = "DeployService",
+        Effect = "Allow",
+        Action = [
+          "ecs:UpdateService",
+          "ecs:DescribeServices"
+        ],
+        Resource = [
+          # 実際のクラスター名・サービス名に合わせる
+          "arn:aws:ecs:ap-northeast-1:990606419933:service/my-ecs-cluster/myservice"
+        ]
+      }
+    ]
+  })
+}
+
+# 作成したポリシーをGitHub Actions用IAMユーザにアタッチ
+resource "aws_iam_user_policy_attachment" "deploy_policy_attach" {
+  user       = aws_iam_user.github_actions_deployer.name
+  policy_arn = aws_iam_policy.ecs_task_deploy_policy.arn
+}
+
+#######################
+# GitHub Actions用: ECSデプロイに必要な iam:PassRole 権限を付与
+#######################
+resource "aws_iam_policy" "ecs_passrole_policy" {
+  name        = "github-actions-deployer-ecs-passrole"
+  description = "Allow GitHub Actions deployer to pass ECS task execution and task roles."
+  policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Action" : "iam:PassRole",
+        "Resource" : [
+          "arn:aws:iam::990606419933:role/ecsTaskExecutionRole",
+          "arn:aws:iam::990606419933:role/ecsTaskRole"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_user_policy_attachment" "ecs_passrole_attachment" {
+  user       = aws_iam_user.github_actions_deployer.name
+  policy_arn = aws_iam_policy.ecs_passrole_policy.arn
 }
