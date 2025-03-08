@@ -122,6 +122,20 @@ resource "aws_security_group" "ecs_sg" {
   description = "Allow inbound 8080 from ALB"
   vpc_id      = aws_vpc.this.id
 
+  ingress {
+    protocol        = "tcp"
+    from_port       = 80
+    to_port         = 80
+    security_groups = [aws_security_group.alb_sg.id] //ALBセキュリティグループからの通信のみを許可
+    description     = "Allow 443 from ALB"
+  }
+  ingress {
+    protocol        = "tcp"
+    from_port       = 443
+    to_port         = 443
+    security_groups = [aws_security_group.alb_sg.id] //ALBセキュリティグループからの通信のみを許可
+    description     = "Allow 443 from ALB"
+  }
   # ALBからの8080を許可
   ingress {
     protocol        = "tcp"                          //tcp、udp、または -1（すべてのプロトコル）
