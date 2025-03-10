@@ -407,3 +407,235 @@ resource "aws_iam_user_policy_attachment" "ecs_passrole_attachment" {
   user       = aws_iam_user.github_actions_deployer.name
   policy_arn = aws_iam_policy.ecs_passrole_policy.arn
 }
+
+################################################################
+# 1. S3バケット (Reactビルド成果物置き場)
+################################################################
+resource "aws_s3_bucket" "react_app_bucket" {
+  bucket = "my-react-spa-bucket-example-2023" # 一意の名前にする
+  acl    = "private"                          # デフォルトのバケットポリシーは全てのアクセスを拒否する
+}
+
+resource "aws_s3_bucket_public_access_block" "react_app_block" {
+  bucket = aws_s3_bucket.react_app_bucket.id
+
+  block_public_acls       = true # バケットACLによるパブリックアクセスを拒否
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+################################################################
+# 2. CloudFrontのOrigin Access Identity(OAI) & バケットポリシー
+################################################################
+resource "aws_cloudfront_origin_access_identity" "oai" {
+  comment = "OAI for my React SPA"
+}
+
+data "aws_iam_policy_document" "s3_policy" {
+  statement {
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.react_app_bucket.arn}/*"
+    ]
+    principals {
+      type        = "AWS"
+      identifiers = [aws_cloudfront_origin_access_identity.oai.iam_arn]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "react_app_bucket_policy" {
+  bucket = aws_s3_bucket.react_app_bucket.id
+  policy = data.aws_iam_policy_document.s3_policy.json
+}
+
+################################################################
+# 3. CloudFront Distribution
+################################################################
+resource "aws_cloudfront_distribution" "react_distribution" {
+  enabled             = true
+  default_root_object = "index.html"
+
+  # カスタムドメインを指定
+  aliases = [
+    "impierrot.click",
+    "www.impierrot.click"
+  ]
+
+  origin {
+    domain_name = aws_s3_bucket.react_app_bucket.bucket_regional_domain_name
+    origin_id   = "myS3Origin"
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.oai.cloudfront_access_identity_path
+    }
+  }
+
+  default_cache_behavior {
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = "myS3Origin"
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+  }
+
+  # SPAのルーティング用に404をindex.htmlにフォールバックさせる例
+  custom_error_response {
+    error_code         = 404
+    response_code      = 200
+    response_page_path = "/index.html"
+  }
+
+  # 必要に応じて独自ドメイン＆ACM証明書を設定
+  viewer_certificate {
+    acm_certificate_arn      = "arn:aws:acm:us-east-1:990606419933:certificate/e84215c2-690d-4ad1-ad46-537afc0cba3c"
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+}
+
+################################################################
+# 4. GitHub Actions用 OIDC プロバイダ
+################################################################
+# GitHubが提供するOIDCエンドポイントを登録
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"] # GitHubの固定Thumbprint
+}
+
+################################################################
+# 5. IAMロール (GitHub ActionsがAssumeする)
+################################################################
+# OIDCでGitHubリポジトリからのみAssumeRoleできるようポリシー条件を指定
+data "aws_iam_policy_document" "github_actions_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+    }
+
+    # Condition: 特定のリポジトリ、特定ブランチ(または任意のブランチ)を指定する
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:YourOrgName/YourRepoName:*"]
+      # 例: "repo:YourOrgName/YourRepoName:ref:refs/heads/main" のようにブランチ縛りも可
+    }
+  }
+}
+
+resource "aws_iam_role" "github_actions_role" {
+  name               = "GitHubActionsDeployRole"
+  assume_role_policy = data.aws_iam_policy_document.github_actions_trust.json
+}
+
+################################################################
+# 6. IAMロールに付与するポリシー(S3アップロード & CF無効化)
+################################################################
+data "aws_iam_policy_document" "github_actions_policy_doc" {
+  statement {
+    actions = [
+      # S3へアップロードする
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:GetObject",
+      "s3:ListBucket"
+    ]
+    resources = [
+      aws_s3_bucket.react_app_bucket.arn,
+      "${aws_s3_bucket.react_app_bucket.arn}/*"
+    ]
+  }
+
+  statement {
+    actions = [
+      # CloudFrontのキャッシュ無効化
+      "cloudfront:CreateInvalidation"
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "github_actions_policy" {
+  name   = "GitHubActionsS3CloudFrontPolicy"
+  policy = data.aws_iam_policy_document.github_actions_policy_doc.json
+}
+
+resource "aws_iam_role_policy_attachment" "attach_policy" {
+  policy_arn = aws_iam_policy.github_actions_policy.arn
+  role       = aws_iam_role.github_actions_role.name
+}
+
+################################################################
+# 7. 出力
+################################################################
+output "s3_bucket_name" {
+  description = "ビルド成果物をアップロードするS3バケット名"
+  value       = aws_s3_bucket.react_app_bucket.bucket
+}
+
+output "cloudfront_distribution_id" {
+  description = "CloudFrontのディストリビューションID (キャッシュ無効化時に使用)"
+  value       = aws_cloudfront_distribution.react_distribution.id
+}
+
+output "cloudfront_domain_name" {
+  description = "CloudFrontドメイン"
+  value       = aws_cloudfront_distribution.react_distribution.domain_name
+}
+
+###############################################################################
+# GitHub Actions IAMユーザーに S3 & CloudFront 権限を付与する
+###############################################################################
+resource "aws_iam_policy" "github_actions_s3_cf_user_policy" {
+  name        = "GitHubActionsS3CloudFrontUserPolicy"
+  description = "Allow S3 (Put/Delete/Get/List) & CloudFront invalidation for GitHub Actions user"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowS3Actions"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject"
+        ]
+        Resource = [
+          # バケットとそのオブジェクトを対象に設定
+          aws_s3_bucket.react_app_bucket.arn,
+          "${aws_s3_bucket.react_app_bucket.arn}/*"
+        ]
+      },
+      {
+        Sid    = "AllowCloudFrontInvalidation"
+        Effect = "Allow"
+        Action = "cloudfront:CreateInvalidation"
+        # 必要に応じて特定のディストリビューションARNに変更可
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_user_policy_attachment" "github_actions_s3_cf_user_policy_attachment" {
+  user       = aws_iam_user.github_actions_deployer.name
+  policy_arn = aws_iam_policy.github_actions_s3_cf_user_policy.arn
+}
