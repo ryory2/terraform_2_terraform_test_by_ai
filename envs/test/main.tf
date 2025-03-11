@@ -313,7 +313,78 @@ resource "aws_ecs_service" "main" {
     aws_service_discovery_private_dns_namespace.this
   ]
 }
-#
+
+#############################
+# ACM証明書のリクエスト (us-east-1)
+#############################
+resource "aws_acm_certificate" "cert" {
+  provider          = aws.us_east
+  domain_name       = "impierrot.click"
+  validation_method = "DNS"
+  # ワイルドカード証明書の場合は以下を設定
+  #   subject_alternative_names = ["*.impierrot.click"]
+}
+
+#############################
+# Route53のホストゾーンのデータ取得
+#############################
+data "aws_route53_zone" "primary" {
+  zone_id      = "Z06442292XEXGMHMQLXK9"
+  name         = "impierrot.click."
+  private_zone = false
+}
+
+#############################
+# DNS検証用レコードの作成
+#############################
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.cert.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+
+  zone_id = data.aws_route53_zone.primary.zone_id
+  name    = each.value.name
+  type    = each.value.type
+  records = [each.value.record]
+  ttl     = 60
+}
+
+#############################
+# 証明書検証の完了
+#############################
+resource "aws_acm_certificate_validation" "cert_validation" {
+  provider                = aws.us_east
+  certificate_arn         = aws_acm_certificate.cert.arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
+}
+
+#############################
+# 出力: 証明書ARN
+#############################
+output "acm_certificate_arn" {
+  value = aws_acm_certificate_validation.cert_validation.certificate_arn
+}
+
+# resource "aws_route53_zone" "main" {
+#   name = "impierrot.click"
+# }
+
+resource "aws_route53_record" "alias_cf" {
+  zone_id = data.aws_route53_zone.primary.zone_id
+  name    = "impierrot.click"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.react_distribution.domain_name
+    zone_id                = aws_cloudfront_distribution.react_distribution.hosted_zone_id
+    evaluate_target_health = true
+  }
+}
+
 ######################
 # GitHub Actions用IAMユーザー
 #######################
@@ -459,8 +530,7 @@ resource "aws_cloudfront_distribution" "react_distribution" {
 
   # カスタムドメインを指定
   aliases = [
-    "impierrot.click",
-    "www.impierrot.click"
+    "impierrot.click"
   ]
 
   origin {
@@ -495,7 +565,7 @@ resource "aws_cloudfront_distribution" "react_distribution" {
 
   # 必要に応じて独自ドメイン＆ACM証明書を設定
   viewer_certificate {
-    acm_certificate_arn      = "arn:aws:acm:us-east-1:990606419933:certificate/e84215c2-690d-4ad1-ad46-537afc0cba3c"
+    acm_certificate_arn      = aws_acm_certificate_validation.cert_validation.certificate_arn
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"
   }
@@ -505,6 +575,9 @@ resource "aws_cloudfront_distribution" "react_distribution" {
       restriction_type = "none"
     }
   }
+
+
+  depends_on = [aws_cloudfront_origin_access_identity.oai, aws_acm_certificate_validation.cert_validation]
 }
 
 ################################################################
@@ -639,3 +712,4 @@ resource "aws_iam_user_policy_attachment" "github_actions_s3_cf_user_policy_atta
   user       = aws_iam_user.github_actions_deployer.name
   policy_arn = aws_iam_policy.github_actions_s3_cf_user_policy.arn
 }
+
