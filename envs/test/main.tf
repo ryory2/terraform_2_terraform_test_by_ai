@@ -275,10 +275,10 @@ resource "aws_ecs_task_definition" "main" {
       ]
       healthCheck = {
         command     = ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
-        startPeriod = 10
+        interval    = 30  # チェック間隔：30秒ごとに実行
+        timeout     = 5   # 各チェックに対して5秒以内に完了することを要求
+        retries     = 3   # 3回連続で失敗したら不健康と判断
+        startPeriod = 300 # コンテナ起動後、10秒間はチェックをスキップ（猶予期間）
       }
     }
   ])
@@ -307,6 +307,8 @@ resource "aws_ecs_service" "main" {
     registry_arn = aws_service_discovery_service.my_service.arn
     # port         = 8080\
   }
+
+  enable_execute_command = true
 
   depends_on = [aws_lb_target_group.back_tg,
     aws_ecs_task_definition.main,
@@ -483,8 +485,9 @@ resource "aws_iam_user_policy_attachment" "ecs_passrole_attachment" {
 # 1. S3バケット (Reactビルド成果物置き場)
 ################################################################
 resource "aws_s3_bucket" "react_app_bucket" {
-  bucket = "my-react-spa-bucket-example-2023" # 一意の名前にする
-  acl    = "private"                          # デフォルトのバケットポリシーは全てのアクセスを拒否する
+  bucket        = "my-react-spa-bucket-example-2023" # 一意の名前にする
+  acl           = "private"                          # デフォルトのバケットポリシーは全てのアクセスを拒否する
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_public_access_block" "react_app_block" {
